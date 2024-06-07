@@ -140,6 +140,9 @@
   setIndex();
   setConnector();
 
+  // select crossfilter example by default
+  exampleMenu.value = 'crossfilter';
+
   async function setConnector() {
     await setDatabaseConnector(connectorMenu.value);
     reload();

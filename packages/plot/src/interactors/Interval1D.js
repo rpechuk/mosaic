@@ -1,5 +1,5 @@
 import { interval } from '@uwdata/mosaic-core';
-import { ascending, min, max, select } from 'd3';
+import { ascending, min, max, select, interpolateRainbow } from 'd3';
 import { brushX, brushY } from './util/brush.js';
 import { closeTo } from './util/close-to.js';
 import { getField } from './util/get-field.js';
@@ -24,7 +24,10 @@ export class Interval1D {
     this.field = field || getField(mark, channel);
     this.style = style && sanitizeStyles(style);
     this.brush = channel === 'y' ? brushY() : brushX();
-    this.brush.on('brush end', ({ selection }) => this.publish(selection));
+    this.brush.on('brush end', (e) => {
+      this.publish(e.selection);
+      if (e?.type === 'end') this.selection.predict(this.clause(this.value));
+    });
   }
 
   reset() {
@@ -48,6 +51,70 @@ export class Interval1D {
       this.g.call(this.brush.moveSilent, extent);
       this.selection.update(this.clause(range));
     }
+  }
+
+  predict(span, client) {
+    const lMargin = this.mark.plot.attributes.marginLeft;
+    const trueSpan = [span[0] + lMargin, span[1] + lMargin];
+
+    // if the current selection is within 1% of the total range of the prediction, don't draw it
+    const delta = (this.scale.domain[1] - this.scale.domain[0]) * 0.05;
+    const range = trueSpan.map(v => invert(v, this.scale, this.pixelSize))
+                      .sort((a, b) => a - b);
+    if (Math.abs(range[0] - this.value[0]) < delta
+      && Math.abs(range[1] - this.value[1]) < delta) return;
+
+    const color = interpolateRainbow(client.hash);
+    // add a div to the client's plot to show what color the prediction is for that client
+    const colorDiv = document.createElement('div');
+    // TODO: this is a simple way to show color think of a better way to show this
+    colorDiv.style.backgroundColor = color;
+    colorDiv.style.width = '10px';
+    colorDiv.style.height = '10px';
+    colorDiv.style.top = '0px';
+    colorDiv.style.left = '0px';
+    client.plot.element.appendChild(colorDiv);
+
+    // if the prediction already exists, don't draw it again
+    if (this.g.selectAll('.prediction_' + client.hash * 0xFFFFFFFF).size() > 0) return;
+
+    this.drawPrediction(trueSpan, color, client);
+  }
+
+  drawPrediction(span, color, client) {
+    // get the width of the axis on the left (if there is one) and the top (if there is one)
+    const tMargin = this.mark.plot.attributes.marginTop;
+    const bMargin = this.mark.plot.attributes.marginBottom;
+    const height = this.mark.plot.attributes.height;
+
+    // change the above to the same but use a rect instead of a path and don't include a stroke
+    const rect = this.g.append('rect')
+      .attr('x', span[0])
+      .attr('y', tMargin)
+      .attr('height', height - tMargin - bMargin)
+      .attr('class', 'prediction_' + client.hash * 0xFFFFFFFF)
+      .style('fill', color)
+      .style('cursor', 'pointer')
+      .style('fill-opacity', 0.3)
+      .style('stroke', 'white')
+      .style('stroke-width', 1)
+      .attr('width', 0);
+    rect.transition()
+      .attr('width', span[1] - span[0]);
+
+    rect.on('click', () => {
+      // TODO use pre-adjustments span instead of start and end here?
+      this.g.selectAll('.prediction_' + client.hash * 0xFFFFFFFF).remove();
+      this.publish(span);
+    });
+
+    rect.on('mouseenter', () => {
+      rect.style('fill-opacity', 0.5);
+    });
+
+    rect.on('mouseleave', () => {
+      rect.style('fill-opacity', 0.3);
+    });
   }
 
   clause(value) {

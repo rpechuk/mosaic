@@ -5,6 +5,7 @@ import { isConstantOption } from './util/is-constant-option.js';
 import { isSymbol } from './util/is-symbol.js';
 import { toDataColumns } from './util/to-data-columns.js';
 import { Transform } from '../symbols.js';
+import { fnv_hash } from '@uwdata/mosaic-core/src/util/hash.js';
 
 const isColorChannel = channel => channel === 'stroke' || channel === 'fill';
 const isOpacityChannel = channel => /opacity$/i.test(channel);
@@ -87,6 +88,13 @@ export class Mark extends MosaicClient {
     for (const channel in encodings) {
       process(channel, encodings[channel]);
     }
+  }
+
+  /**
+   * A hash value for the current mark configuration.
+   */
+  get hash() {
+    return fnv_hash(JSON.stringify(this.channels)) / 0xFFFFFFFF;
   }
 
   /**

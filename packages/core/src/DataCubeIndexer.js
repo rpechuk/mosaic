@@ -1,8 +1,6 @@
-import {
-  Query, and, asColumn, create, isBetween, scaleTransform, sql
-} from '@uwdata/mosaic-sql';
-import { indexColumns } from './util/index-columns.js';
+import { Query, and, asColumn, max, create, isBetween, min, scaleTransform, sql, sum } from '@uwdata/mosaic-sql';
 import { fnv_hash } from './util/hash.js';
+import { indexColumns } from './util/index-columns.js';
 
 const Skip = { skip: true, result: null };
 
@@ -61,6 +59,7 @@ export class DataCubeIndexer {
     this.mc.cancel(Array.from(this.indexes.values(), info => info?.result));
     this.indexes = new Map();
     this.active = null;
+    this.predictions = null;
   }
 
   /**
@@ -134,6 +133,115 @@ export class DataCubeIndexer {
 
     indexes.set(client, info);
     return info;
+  }
+  
+
+  async updateClient(client, filter) {
+    const { mc, indices, selection } = this;
+    // if we have cached data cube index table info, return that
+    if (indexes.has(client)) {
+      return indexes.get(client);
+    }
+
+    // get non-active data cube index table columns
+    const indexCols = indexColumns(client);
+
+    let info;
+    if (!indexCols?.from) {
+      // if client is not indexable, record null index
+      info = null;
+    } else if (selection.skip(client, activeClause)) {
+      // skip client if untouched by cross-filtering
+      info = Skip;
+    } else {
+      // generate data cube index table
+      const filter = selection.remove(source).predicate(client);
+      info = dataCubeInfo(client.query(filter), active, indexCols);
+      info.result = mc.exec(create(info.table, info.create, { temp }));
+      info.result.catch(e => mc.logger().error(e));
+    }
+
+    indexes.set(client, info);
+    return info;
+  }
+
+  async predictClient(client) {
+    const { mc, indices } = this;
+
+    // if client has no index, don't do anything
+    if (!indices.has(client)) {
+      return;
+    }
+    const index = this.indices.get(client);
+    // skip update if cross-filtered
+    if (!index) return;
+
+    // get the minimum and maximum active0 values in the index
+    const minMaxQuery = Query
+      .select([{min: min('active0')}, {max: max('active0')}])
+      .from(index.table);
+    let minActive0;
+    let maxActive0;
+    const minMax = await mc.query(minMaxQuery);
+    for (const {min, max} of minMax) {
+      minActive0 = min;
+      maxActive0 = max;
+      break;
+    }
+    const range = maxActive0 - minActive0;
+    const windowSize = Math.ceil(range / 10); // 10 % of the range
+    
+    const withQuery = Query
+      .select('active0', {
+        WeightedSum: sql`SUM(x1 * y) OVER w`,
+        WeightSum: sql`SUM(y) OVER w`
+      })
+      .from(index.table)
+      .window({
+        w: sql`
+          PARTITION BY active0
+          ORDER BY active0
+          ROWS BETWEEN ${windowSize} PRECEDING AND CURRENT ROW
+        `
+      })
+
+    const query = Query
+      .with({ withQuery })
+      .select('active0', {
+        WeightedSum: sum('WeightedSum'),
+        WeightSum: sum('WeightSum')
+      })
+      .from('withQuery')
+      .groupby('active0')
+      .orderby('active0');
+    const answer = mc.query(query).then(
+      data => {
+        const minSpan = [0, 0];
+        let minAvg = Infinity;
+        const maxSpan = [0, 0];
+        let maxAvg = -Infinity;
+
+        for (const d of data) {
+          const avg = d['WeightedSum'] / d['WeightSum'];
+          if (avg < minAvg && d['WeightSum'] > 500) {
+            minAvg = avg;
+            minSpan[0] = d['active0'];
+            minSpan[1] = Math.min(d['active0'] + windowSize, maxActive0);
+          }
+          if (avg > maxAvg) {
+            maxAvg = avg;
+            maxSpan[0] = d['active0'];
+            maxSpan[1] = Math.min(d['active0'] + windowSize, maxActive0);
+          }
+        }
+
+        this.active.source.predict(minSpan, client);
+        // this.active.source.predict(maxSpan, client);
+      },
+      err => console.error(err)
+    );
+
+    return answer;
   }
 }
 
