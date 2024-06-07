@@ -19,17 +19,20 @@ export class FilterGroup {
     this.indexer = null;
     this.index(index);
 
-    const { value, activate } = this.handlers = {
+    const { value, activate, predict } = this.handlers = {
       value: () => this.update(),
-      activate: clause => { this.indexer?.index(this.clients, clause); }
+      predict: () => this.updatePrediction(),
+      activate: clause => { this.indexer?.index(this.clients, clause); },
     };
     selection.addEventListener('value', value);
     selection.addEventListener('activate', activate);
+    selection.addEventListener('predict', predict);
   }
 
   finalize() {
-    const { value, activate } = this.handlers;
+    const { value, activate, predict } = this.handlers;
     this.selection.removeEventListener('value', value);
+    this.selection.removeEventListener('predict', predict);
     this.selection.removeEventListener('activate', activate);
   }
 
@@ -68,6 +71,16 @@ export class FilterGroup {
     return hasIndex
       ? indexer.update()
       : defaultUpdate(mc, clients, selection);
+  }
+
+  /**
+   * Internal method to process a selection prediction (happens at the end of a brush).
+   * The return value is passed as a selection callback value.
+   * @returns {Promise} A Promise that resolves when the prediction completes.
+   */
+  updatePrediction() {
+    const { indexer, clients } = this;
+    return indexer?.predict(clients);
   }
 }
 

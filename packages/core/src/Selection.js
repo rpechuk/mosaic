@@ -151,6 +151,14 @@ export class Selection extends Param {
   }
 
   /**
+   * Emit a predict event with the given selection clause.
+   * @param {*} clause The clause repesenting the current activation.
+   */
+  predict(clause) {
+    this.emit('predict', clause);
+  }
+
+  /**
    * Update the selection with a new selection clause.
    * @param {*} clause The selection clause to add.
    * @returns {this} This Selection instance.
